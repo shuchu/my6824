@@ -22,6 +22,15 @@ type ExampleReply struct {
 	Y int
 }
 
+// Define the arguments and reply for the Map-Reducer
+type MrArgs struct {
+	filePath string
+}
+
+type MrReply struct {
+	filePath string
+}
+
 // Add your RPC definitions here.
 
 
