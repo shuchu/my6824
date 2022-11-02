@@ -13,7 +13,6 @@ import (
 
 type Task struct {
 	sync.RWMutex
-	id           int32
 	jobType      int8 // map (0), reducer (1)
 	jobStatus    int8 // idel (0), in-progress (1), done (2)
 	lastUpdateTs int64
@@ -21,7 +20,8 @@ type Task struct {
 }
 
 type Coordinator struct {
-	tasks []Task
+	tasks    []Task
+	nReducer int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -29,8 +29,44 @@ type Coordinator struct {
 // an example RPC handler.
 //
 // the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+//func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
+//	reply.Y = args.X + 1
+//	return nil
+//}
+
+// Assign a job
+func (c *Coordinator) Assign(args *MrArgs, reply *MrReply) error {
+	// Check all tasks, and return an idel one.
+	for i := int32(0); i < int32(len(c.tasks)); i++ {
+		t := &c.tasks[i]
+		if t.jobStatus == 0 {
+			t.Lock()
+			reply.FilePath = t.filePath
+			reply.JobId = i
+			reply.JobType = t.jobType
+			reply.NumReducer = c.nReducer
+			reply.JobStatus = t.jobStatus
+			t.jobStatus = 1 // now in progress
+			t.Unlock()
+			break
+		}
+	}
+	return nil
+}
+
+func (c *Coordinator) Update(args *MrArgs, reply *MrReply) error {
+	// Update the state of One task.
+	if 0 <= args.JobId && args.JobId < int32(len(c.tasks)) {
+		t := &c.tasks[args.JobId]
+		if args.JobStatus != t.jobStatus {
+			t.Lock()
+			t.jobStatus = args.JobStatus
+			t.Unlock()
+
+			// reply to the caller with latest job status
+			reply.JobStatus = t.jobStatus
+		}
+	}
 	return nil
 }
 
@@ -63,21 +99,21 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
+	c.nReducer = nReduce
+	if c.nReducer < 1 {
+		c.nReducer = 1 // the minimum number of reducer
+	}
 
 	// create Tasks with length equals to possible total number of tasks
 	c.tasks = make([]Task, len(files)+nReduce)
 
 	// Your code here
-	var _task_id int32 = 1
-	for _, filename := range files {
-		t := Task{}
-		t.id = _task_id
+	for idx, filename := range files {
+		t := &c.tasks[idx]
 		t.jobType = 0
 		t.jobStatus = 0
 		t.lastUpdateTs = time.Now().Unix()
 		t.filePath = filename
-		c.tasks = append(c.tasks, t)
-		_task_id += 1
 	}
 
 	c.server()
@@ -90,9 +126,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 func showTasks(c *Coordinator) {
 	for {
-		time.Sleep(time.Second)
-		for _, t := range c.tasks {
-			fmt.Println(t.id, t.jobType, t.jobStatus, t.lastUpdateTs,
+		time.Sleep(3 * time.Second)
+		for i := 0; i < len(c.tasks); i++ {
+			t := &c.tasks[i]
+			fmt.Printf("type: %v, status: %v, ts: %d, fpath: %v\n", t.jobType, t.jobStatus, t.lastUpdateTs,
 				t.filePath)
 		}
 	}

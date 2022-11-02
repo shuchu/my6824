@@ -6,8 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -24,15 +26,20 @@ type ExampleReply struct {
 
 // Define the arguments and reply for the Map-Reducer
 type MrArgs struct {
-	filePath string
+	JobId     int32
+	JobStatus int8
+	FilePath  string
 }
 
 type MrReply struct {
-	filePath string
+	JobId      int32
+	JobType    int8 // map(0), reduce (1)
+	JobStatus  int8
+	NumReducer int
+	FilePath   string
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

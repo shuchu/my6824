@@ -1,40 +1,106 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"time"
+)
 
-
-//
 // Map functions return a slice of KeyValue.
-//
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
-//
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	for {
+		time.Sleep(2 * time.Second)
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+		// request a job
+		args := MrArgs{}
+		reply := MrReply{}
+
+		ok := call("Coordinator.Assign", &args, &reply)
+		if ok {
+			fmt.Printf("Got a job man! id: %d, type: %d, filePath %v\n",
+				reply.JobId, reply.JobType, reply.FilePath)
+		} else {
+			fmt.Println("call failed!")
+		}
+
+		// map or reduce
+		if reply.JobType == 0 && reply.FilePath != "" {
+			var kva []KeyValue = mapWorker(reply.FilePath, mapf)
+			// Now store the data to file
+			for y := 0; y < reply.NumReducer; y++ {
+				kva_y := []KeyValue{}
+				oname := fmt.Sprintf("mr-%d-%d", reply.JobId, y)
+				ofile, _ := os.Create(oname)
+				for i := 0; i < len(kva); i++ {
+					if ihash(kva[i].Key)%reply.NumReducer == y {
+						kva_y = append(kva_y, kva[i])
+					}
+				}
+				enc := json.NewEncoder(ofile)
+				err := enc.Encode(&kva_y)
+				if err != nil {
+					log.Fatalf("cannot write %v", oname)
+				}
+				ofile.Close()
+			}
+
+			// call rpc to update the job status
+			args.JobId = reply.JobId
+			args.JobStatus = 2 // means Done!
+			ok := call("Coordinator.Update", &args, &reply)
+			if ok {
+				fmt.Printf("Updated a job man! id: %d, type: %d, status: %d\n",
+					reply.JobId, reply.JobType, reply.JobStatus)
+				// if the update fail...
+				if reply.JobStatus != args.JobStatus {
+					fmt.Println("Failed to update job status!")
+				}
+			} else {
+				fmt.Println("call failed!")
+			}
+
+		} else if reply.JobType == 1 {
+			fmt.Printf("Its a reduce job")
+		}
+	}
+}
+
+func mapWorker(filename string, mapf func(string, string) []KeyValue) []KeyValue {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	return mapf(filename, string(content))
+}
+
+func reduceWorker(filename string, reducef func(string, string) []KeyValue) {
 
 }
 
@@ -43,6 +109,7 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
+/*
 func CallExample() {
 
 	// declare an argument structure.
@@ -66,12 +133,11 @@ func CallExample() {
 		fmt.Printf("call failed!\n")
 	}
 }
+*/
 
-//
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
