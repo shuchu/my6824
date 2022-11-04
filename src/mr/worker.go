@@ -8,6 +8,9 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -24,6 +27,14 @@ func ihash(key string) int {
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
@@ -71,7 +82,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			args.JobStatus = 2 // means Done!
 			ok := call("Coordinator.Update", &args, &reply)
 			if ok {
-				fmt.Printf("Updated a job man! id: %d, type: %d, status: %d\n",
+				fmt.Printf("Updated the status of job  id: %d, type: %d, status: %d\n",
 					reply.JobId, reply.JobType, reply.JobStatus)
 				// if the update fail...
 				if reply.JobStatus != args.JobStatus {
@@ -82,7 +93,77 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 		} else if reply.JobType == 1 {
-			fmt.Printf("Its a reduce job")
+			//Its a reduce job
+			//Find all files that have map result
+			fmt.Println(reply.FilePath)
+			matches, err := filepath.Glob(reply.FilePath)
+			if err != nil {
+				fmt.Println(err)
+			}
+
+			// load all map results to intermediate buffer
+			intermediate := []KeyValue{}
+			for _, filename := range matches {
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot open %v", filename)
+				}
+				dec := json.NewDecoder(file)
+				for {
+					var kv []KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv...)
+				}
+			}
+
+			sort.Sort(ByKey(intermediate))
+
+			oname := reply.FilePath
+			oname = strings.Replace(oname, "*", "out", 1)
+			ofile, _ := os.Create(oname)
+
+			// call Reduce on each distinct key in intermediate[],
+			// and print the result to mr-out-0.
+			//
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+				i = j
+			}
+
+			ofile.Close()
+			// call rpc to update the job status
+			args.JobId = reply.JobId
+			args.JobStatus = 2 // means Done!
+			ok := call("Coordinator.Update", &args, &reply)
+			if ok {
+				fmt.Printf("Updated the status of job  id: %d, type: %d, status: %d\n",
+					reply.JobId, reply.JobType, reply.JobStatus)
+				// if the update fail...
+				if reply.JobStatus != args.JobStatus {
+					fmt.Println("Failed to update job status!")
+				}
+			} else {
+				fmt.Println("call failed!")
+			}
+
+		} else if reply.JobType == 2 {
+			fmt.Printf("I was asked to quit the job since no more tasks.")
+			break
 		}
 	}
 }

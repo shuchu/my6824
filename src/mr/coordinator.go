@@ -13,15 +13,17 @@ import (
 
 type Task struct {
 	sync.RWMutex
-	jobType      int8 // map (0), reducer (1)
+	jobType      int8 // map (0), reducer (1), quit(2)
 	jobStatus    int8 // idel (0), in-progress (1), done (2)
 	lastUpdateTs int64
 	filePath     string
 }
 
 type Coordinator struct {
-	tasks    []Task
-	nReducer int
+	tasks       []Task
+	nReducer    int
+	mapJobsDone bool
+	rdJobsDone  bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -36,10 +38,29 @@ type Coordinator struct {
 
 // Assign a job
 func (c *Coordinator) Assign(args *MrArgs, reply *MrReply) error {
+	// if all jobs are done, reply a "please exit" task
+	if c.mapJobsDone && c.rdJobsDone {
+		reply.JobType = 2
+		return nil
+	}
+
 	// Check all tasks, and return an idel one.
 	for i := int32(0); i < int32(len(c.tasks)); i++ {
 		t := &c.tasks[i]
-		if t.jobStatus == 0 {
+		if t.jobStatus == 0 && t.jobType == 0 {
+			// map jobs
+			t.Lock()
+			reply.FilePath = t.filePath
+			reply.JobId = i
+			reply.JobType = t.jobType
+			reply.NumReducer = c.nReducer
+			reply.JobStatus = t.jobStatus
+			t.jobStatus = 1 // now in progress
+			t.Unlock()
+			break
+		} else if t.jobStatus == 0 && t.jobType == 1 && c.mapJobsDone {
+			// reduce jobs
+			// now assigh reduce jobs
 			t.Lock()
 			reply.FilePath = t.filePath
 			reply.JobId = i
@@ -61,6 +82,7 @@ func (c *Coordinator) Update(args *MrArgs, reply *MrReply) error {
 		if args.JobStatus != t.jobStatus {
 			t.Lock()
 			t.jobStatus = args.JobStatus
+			t.lastUpdateTs = time.Now().Unix()
 			t.Unlock()
 
 			// reply to the caller with latest job status
@@ -106,8 +128,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// create Tasks with length equals to possible total number of tasks
 	c.tasks = make([]Task, len(files)+nReduce)
+	c.mapJobsDone = false
+	c.rdJobsDone = false
 
 	// Your code here
+	// Create map tasks
 	for idx, filename := range files {
 		t := &c.tasks[idx]
 		t.jobType = 0
@@ -116,21 +141,42 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		t.filePath = filename
 	}
 
+	// create reduce tasks
+	for i := 0; i < nReduce; i++ {
+		t := &c.tasks[i+len(files)]
+		t.jobType = 1
+		t.jobStatus = 0
+		t.lastUpdateTs = time.Now().Unix()
+		t.filePath = fmt.Sprintf("mr-*-%d", i)
+	}
+
 	c.server()
 
-	//debug
-	go showTasks(&c)
+	// Evaluate tasks. Check the progress of Map tasks and Reduce Tasks.
+	go evalTasks(&c)
 
 	return &c
 }
 
-func showTasks(c *Coordinator) {
+func evalTasks(c *Coordinator) {
 	for {
-		time.Sleep(3 * time.Second)
+		time.Sleep(10 * time.Second)
+		mapTasksDone, reduceTasksDone := true, true
 		for i := 0; i < len(c.tasks); i++ {
 			t := &c.tasks[i]
-			fmt.Printf("type: %v, status: %v, ts: %d, fpath: %v\n", t.jobType, t.jobStatus, t.lastUpdateTs,
-				t.filePath)
+			fmt.Printf("type: %v, status: %v, ts: %d, fpath: %v\n",
+				t.jobType, t.jobStatus, t.lastUpdateTs, t.filePath)
+
+			if t.jobType == 0 && t.jobStatus != 2 {
+				mapTasksDone = false
+			}
+
+			if t.jobType == 1 && t.jobStatus != 2 {
+				reduceTasksDone = false
+			}
 		}
+
+		c.mapJobsDone = mapTasksDone
+		c.rdJobsDone = reduceTasksDone
 	}
 }
