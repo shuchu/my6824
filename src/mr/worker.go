@@ -54,7 +54,15 @@ func Worker(mapf func(string, string) []KeyValue,
 				reply.JobId, reply.JobType, reply.FilePath)
 		} else {
 			fmt.Println("call failed!")
+			break // we let it die if the server does not reply.
 		}
+
+		// update the args values
+		args.JobStatus = reply.JobStatus
+		args.JobId = reply.JobId
+
+		// send heart beat
+		go sendHeartBeat(&args, &reply)
 
 		// map or reduce
 		if reply.JobType == 0 && reply.FilePath != "" {
@@ -78,7 +86,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			// call rpc to update the job status
-			args.JobId = reply.JobId
 			args.JobStatus = 2 // means Done!
 			ok := call("Coordinator.Update", &args, &reply)
 			if ok {
@@ -95,7 +102,6 @@ func Worker(mapf func(string, string) []KeyValue,
 		} else if reply.JobType == 1 {
 			//Its a reduce job
 			//Find all files that have map result
-			fmt.Println(reply.FilePath)
 			matches, err := filepath.Glob(reply.FilePath)
 			if err != nil {
 				fmt.Println(err)
@@ -147,7 +153,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			ofile.Close()
 			// call rpc to update the job status
-			args.JobId = reply.JobId
 			args.JobStatus = 2 // means Done!
 			ok := call("Coordinator.Update", &args, &reply)
 			if ok {
@@ -181,8 +186,20 @@ func mapWorker(filename string, mapf func(string, string) []KeyValue) []KeyValue
 	return mapf(filename, string(content))
 }
 
-func reduceWorker(filename string, reducef func(string, string) []KeyValue) {
+//func reduceWorker(filename string, reducef func(string, string) []KeyValue) {
+//}
 
+func sendHeartBeat(args *MrArgs, reply *MrReply) {
+	if reply.JobStatus == 1 {
+		time.Sleep(5 * time.Second)
+		ok := call("Coordinator.Update", args, reply)
+
+		if ok {
+			fmt.Println("sent heart beat to server for job: %d", args.JobId)
+		} else {
+			fmt.Println("failed sent heart beat to server for job %d", args.JobId)
+		}
+	}
 }
 
 //

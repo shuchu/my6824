@@ -38,7 +38,6 @@ type Coordinator struct {
 
 // Assign a job
 func (c *Coordinator) Assign(args *MrArgs, reply *MrReply) error {
-	// if all jobs are done, reply a "please exit" task
 	if c.mapJobsDone && c.rdJobsDone {
 		reply.JobType = 2
 		return nil
@@ -54,20 +53,20 @@ func (c *Coordinator) Assign(args *MrArgs, reply *MrReply) error {
 			reply.JobId = i
 			reply.JobType = t.jobType
 			reply.NumReducer = c.nReducer
-			reply.JobStatus = t.jobStatus
-			t.jobStatus = 1 // now in progress
+			t.jobStatus = 1               // now in progress
+			reply.JobStatus = t.jobStatus // this should after set t.jobStatus
 			t.Unlock()
 			break
 		} else if t.jobStatus == 0 && t.jobType == 1 && c.mapJobsDone {
 			// reduce jobs
-			// now assigh reduce jobs
+			// now assign reduce jobs
 			t.Lock()
 			reply.FilePath = t.filePath
 			reply.JobId = i
 			reply.JobType = t.jobType
 			reply.NumReducer = c.nReducer
-			reply.JobStatus = t.jobStatus
 			t.jobStatus = 1 // now in progress
+			reply.JobStatus = t.jobStatus
 			t.Unlock()
 			break
 		}
@@ -112,6 +111,9 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	if c.mapJobsDone && c.rdJobsDone {
+		ret = true
+	}
 
 	return ret
 }
@@ -162,6 +164,8 @@ func evalTasks(c *Coordinator) {
 	for {
 		time.Sleep(10 * time.Second)
 		mapTasksDone, reduceTasksDone := true, true
+
+		currUnixTs := time.Now().Unix()
 		for i := 0; i < len(c.tasks); i++ {
 			t := &c.tasks[i]
 			fmt.Printf("type: %v, status: %v, ts: %d, fpath: %v\n",
@@ -174,6 +178,18 @@ func evalTasks(c *Coordinator) {
 			if t.jobType == 1 && t.jobStatus != 2 {
 				reduceTasksDone = false
 			}
+
+			// Check the status of each task, if the Last update TS
+			// (lastUpdateTs) of task is 10sec ago, reset the jobStatus to 0,
+			// which means New.
+
+			if t.jobType == 1 && (currUnixTs-t.lastUpdateTs > 10) {
+				t.Lock()
+				t.jobStatus = 0
+				t.Unlock()
+				fmt.Println("Job %d status is reset to 0.", i)
+			}
+
 		}
 
 		c.mapJobsDone = mapTasksDone
